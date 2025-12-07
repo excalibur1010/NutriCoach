@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Camera, Mic, Upload, Zap, User, Home, X, Check, ChevronRight, FileText, PlusCircle } from 'lucide-react';
-//After new Update
-//const API_URL = 'http://localhost:3001';
+import { Camera, Mic, Upload, Zap, User, Home, X, Check, ChevronRight, FileText, PlusCircle, Edit3, Send } from 'lucide-react';
+
+
 const API_URL = 'https://nutricoach-iuw7.onrender.com';
 
 const App = () => {
@@ -17,6 +17,7 @@ const App = () => {
   const [aiMessage, setAiMessage] = useState("Loading your plan...");
   const [fullRecs, setFullRecs] = useState(null); 
   const [loading, setLoading] = useState(false);
+  const [textInput, setTextInput] = useState(""); // New state for manual input
   
   // Modals
   const [pendingMeal, setPendingMeal] = useState(null); 
@@ -28,13 +29,16 @@ const App = () => {
 
   const fetchData = async () => {
     try {
-      const [profileRes, mealsRes] = await Promise.all([
+      // Use Promise.allSettled to prevent one failure from breaking everything
+      const results = await Promise.allSettled([
         fetch(`${API_URL}/api/profile`),
         fetch(`${API_URL}/api/meals`)
       ]);
-      const profile = await profileRes.json();
-      const meals = await mealsRes.json();
 
+      const profileRes = results[0].status === 'fulfilled' ? await results[0].value.json() : { goals: {} };
+      const mealsRes = results[1].status === 'fulfilled' ? await results[1].value.json() : [];
+
+      const meals = Array.isArray(mealsRes) ? mealsRes : [];
       const today = new Date().toDateString();
       const todaysMeals = meals.filter(m => new Date(m.timestamp).toDateString() === today);
       
@@ -47,15 +51,17 @@ const App = () => {
       }));
 
       setStats({
-        calories: { current: newStats.calories, target: profile.goals?.calories || 2000 },
-        protein: { current: newStats.protein, target: profile.goals?.protein || 150 },
-        carbs: { current: newStats.carbs, target: profile.goals?.carbs || 200 },
-        fats: { current: newStats.fats, target: profile.goals?.fats || 70 },
+        calories: { current: newStats.calories, target: profileRes.goals?.calories || 2000 },
+        protein: { current: newStats.protein, target: profileRes.goals?.protein || 150 },
+        carbs: { current: newStats.carbs, target: profileRes.goals?.carbs || 200 },
+        fats: { current: newStats.fats, target: profileRes.goals?.fats || 70 },
       });
 
-      // Coach message disabled to save API calls while testing
-      // getCoachMessage(newStats, profile.goals);
-    } catch (e) { console.error(e); setAiMessage("Offline Mode"); }
+      getCoachMessage(newStats, profileRes.goals);
+    } catch (e) { 
+      console.error("Fetch error:", e); 
+      setAiMessage("System waking up... please wait."); 
+    }
   };
 
   const getCoachMessage = async (current, targets) => {
@@ -76,78 +82,52 @@ const App = () => {
     } catch (e) { console.error(e); }
   };
 
-  // --- NEW: VOICE INPUT HANDLER ---
+  // --- HANDLERS ---
+  const handleManualSubmit = () => {
+    if (!textInput.trim()) return;
+    handleTextAnalysis(textInput);
+    setTextInput(""); // Clear input
+  };
+
   const handleVoiceInput = () => {
-    // 1. Check if browser supports voice
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    
     if (!SpeechRecognition) {
-      // Fallback for browsers without support
-      const text = prompt("Voice not supported in this browser. Type your meal:");
-      if (text) handleTextAnalysis(text);
+      alert("Voice not supported. Please use the text input below.");
       return;
     }
-
-    // 2. Start Listening
     const recognition = new SpeechRecognition();
     recognition.lang = 'en-US';
     recognition.start();
-    
-    // UI Feedback
     setLoading(true);
     alert("🎤 Listening... Speak now!"); 
 
     recognition.onresult = (event) => {
       const transcript = event.results[0][0].transcript;
-      console.log("You said:", transcript);
       handleTextAnalysis(transcript);
     };
-
     recognition.onerror = (event) => {
-      console.error("Speech Error", event.error);
+      console.error(event);
       setLoading(false);
-      alert("Could not hear you. Please try again.");
+      alert("Microphone error.");
     };
   };
 
-  // --- NEW: TEXT ANALYSIS (Converts words to food macros) ---
   const handleTextAnalysis = async (text) => {
     setLoading(true);
     try {
-      // We ask Gemini to turn the text into the exact JSON format our app needs
-      const prompt = `
-        Analyze this meal description: "${text}".
-        Estimate the nutrition.
-        CRITICAL: Assign a "health_grade" (A, B, C, D, F) and a "health_reason".
-        
-        Return ONLY raw JSON (no markdown).
-        Format:
-        {
-          "name": "Short Name",
-          "calories": 0, "protein": 0, "carbs": 0, "fats": 0,
-          "health_grade": "B", "health_reason": "..."
-        }
-      `;
-
+      const prompt = `Analyze meal: "${text}". Estimate nutrition. CRITICAL: Assign "health_grade" (A-F) & "health_reason". Return JSON: { "name": "...", "calories": 0, "protein": 0, "carbs": 0, "fats": 0, "health_grade": "B", "health_reason": "..." }`;
       const res = await fetch(`${API_URL}/api/llm/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: prompt })
       });
-
       if (res.status === 429) { alert("AI Busy. Wait 1 min."); return; }
-
       const data = await res.json();
-      
-      // Parse the response
       let foodData = typeof data.responseText === 'string' ? JSON.parse(data.responseText) : data.responseText;
-      
-      // Show the Modal
       setPendingMeal({ foods: [foodData] });
-
     } catch (e) {
       console.error(e);
-      alert("Could not understand that meal.");
+      alert("Could not analyze text. Check connection.");
     } finally {
       setLoading(false);
     }
@@ -163,13 +143,15 @@ const App = () => {
       const endpoint = isMenu ? `${API_URL}/api/vision/menu` : `${API_URL}/api/vision/recognize`;
       const res = await fetch(endpoint, { method: 'POST', body: formData });
       
-      if (res.status === 429) { alert("AI Usage Limit Reached. Please wait 1 minute."); setLoading(false); return; }
+      if (!res.ok) throw new Error(`Server Error: ${res.status}`);
       
       const data = await res.json();
       if (isMenu) setMenuResults(data);
       else if (data.foods) setPendingMeal(data);
-    } catch (e) { alert("Error analyzing image"); }
-    finally { setLoading(false); }
+    } catch (e) { 
+      console.error(e); 
+      alert("Error analyzing image. If this is the first request in a while, please wait 60s for the server to wake up and try again."); 
+    } finally { setLoading(false); }
   };
 
   const saveMeal = async (mealData) => {
@@ -228,6 +210,22 @@ const App = () => {
           </div>
         </div>
 
+        {/* --- MANUAL TEXT INPUT --- */}
+        <div className="bg-slate-800/50 border border-white/10 rounded-3xl p-4 flex gap-2 items-center">
+          <Edit3 className="text-gray-400 ml-2" size={20} />
+          <input 
+            type="text" 
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            placeholder="Type what you ate (e.g., 'Oatmeal and berries')..."
+            className="bg-transparent border-none outline-none flex-1 text-white placeholder-gray-500"
+            onKeyDown={(e) => e.key === 'Enter' && handleManualSubmit()}
+          />
+          <button onClick={handleManualSubmit} disabled={loading} className="p-2 bg-emerald-500 rounded-xl hover:bg-emerald-600 transition disabled:opacity-50">
+            <Send size={18} fill="white" />
+          </button>
+        </div>
+
         {/* Inputs */}
         <div className="grid md:grid-cols-2 gap-6">
           <div className="bg-slate-800/50 border border-white/10 rounded-3xl p-8 text-center hover:border-pink-500/30 transition relative group">
@@ -237,7 +235,7 @@ const App = () => {
             <div className="flex gap-2 justify-center">
               <label className="cursor-pointer">
                 <input type="file" accept="image/*" className="hidden" onChange={(e) => handleUpload(e, false)} disabled={loading} />
-                <div className="px-6 py-3 bg-gradient-to-r from-pink-500 to-rose-600 rounded-xl font-bold flex items-center gap-2 hover:opacity-90 transition"><Upload size={18} /> {loading ? "Analyzing..." : "Food"}</div>
+                <div className="px-6 py-3 bg-gradient-to-r from-pink-500 to-rose-600 rounded-xl font-bold flex items-center gap-2 hover:opacity-90 transition"><Upload size={18} /> {loading ? "..." : "Food"}</div>
               </label>
               <label className="cursor-pointer">
                 <input type="file" accept="image/*" className="hidden" onChange={(e) => handleUpload(e, true)} disabled={loading} />
@@ -246,19 +244,17 @@ const App = () => {
             </div>
           </div>
 
-          {/* VOICE CARD (NOW ACTIVE) */}
           <div className="bg-slate-800/50 border border-white/10 rounded-3xl p-8 text-center hover:border-violet-500/30 transition group">
             <div className="w-16 h-16 bg-violet-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition"><Mic size={32} className="text-violet-400" /></div>
             <h3 className="font-bold text-xl mb-2">Voice Log</h3>
             <p className="text-gray-400 text-sm mb-6">Tell us what you ate</p>
-            
             <button onClick={handleVoiceInput} disabled={loading} className="w-full py-3 bg-gradient-to-r from-violet-500 to-purple-600 rounded-xl font-bold flex justify-center gap-2 hover:opacity-90 transition">
               <Mic size={18} /> {loading ? "Listening..." : "Start Speaking"}
             </button>
           </div>
         </div>
 
-        {/* AI Coach */}
+        {/* Coach */}
         <div onClick={() => setShowRecs(true)} className="bg-gradient-to-r from-slate-800 to-slate-900 border border-white/10 rounded-3xl p-6 flex items-center gap-4 cursor-pointer hover:border-emerald-500/30 transition">
           <div className="w-12 h-12 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-xs">AI</div>
           <div className="flex-1">

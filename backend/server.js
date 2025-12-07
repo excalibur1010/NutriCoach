@@ -11,7 +11,8 @@ const port = 3001;
 
 // --- CONFIGURATION ---
 app.use(express.json());
-app.use(cors({ origin: 'http://localhost:3000' }));
+//app.use(cors({ origin: 'http://localhost:3000' }));
+app.use(cors({ origin: '*' }));
 const upload = multer({ storage: multer.memoryStorage() });
 
 // --- GEMINI SETUP ---
